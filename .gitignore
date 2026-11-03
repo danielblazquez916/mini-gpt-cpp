@@ -1,0 +1,97 @@
+
+# ==========================================
+# Mini GPT C++ - .gitignore
+# ==========================================
+
+# Kimi Code / Agent instructions
+AGENTS.md
+**/AGENTS.md
+
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+bin/
+obj/
+Debug/
+Release/
+x64/
+x86/
+
+# CMake generated files
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+CTestTestfile.cmake
+Makefile
+compile_commands.json
+Testing/
+_install/
+
+# Compiled binaries and libraries
+*.exe
+*.dll
+*.so
+*.dylib
+*.a
+*.lib
+*.o
+*.obj
+*.pdb
+*.ilk
+*.exp
+*.idb
+
+# IDE configuration
+.vs/
+.vscode/*
+!.vscode/extensions.json
+.idea/
+*.user
+*.suo
+*.VC.db
+*.VC.opendb
+
+# Temporary files and logs
+*.log
+*.tmp
+*.temp
+*.bak
+*.swp
+*~
+.DS_Store
+Thumbs.db
+
+# Datasets and tokenized corpora
+data/raw/
+data/processed/
+datasets/
+*.bin
+*.npy
+*.npz
+
+# Trained tokenizers and vocabularies
+*.bpe
+
+# Model weights and checkpoints
+checkpoints/
+models/
+*.ckpt
+*.safetensors
+*.pt
+*.pth
+*.onnx
+*.gguf
+
+# CUDA generated files
+*.cubin
+*.fatbin
+*.ptx
+
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem

@@ -1,0 +1,5 @@
+<|user|> hola <|eot|>
+<|assistant|> ¡hola! ¿qué tal? <|eot|>
+<|user|> bien, ¿y tú? <|eot|>
+<|assistant|> bien también jajaja <|eot|>
+<|end|>
