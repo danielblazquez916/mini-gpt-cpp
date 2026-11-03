@@ -57,6 +57,25 @@ else()
     target_compile_options(mini_gpt_embedding PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(mini_gpt_attention STATIC
+    src/causal_self_attention.cpp
+)
+
+target_include_directories(mini_gpt_attention
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(mini_gpt_attention PUBLIC mini_gpt_tensor)
+target_compile_features(mini_gpt_attention PUBLIC cxx_std_20)
+set_target_properties(mini_gpt_attention PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    target_compile_options(mini_gpt_attention PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(mini_gpt_attention PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(tokenizer_demo
     apps/tokenizer_demo.cpp
 )
@@ -90,6 +109,25 @@ if(MSVC)
     target_compile_options(embedding_demo PRIVATE /W4 /permissive- /utf-8)
 else()
     target_compile_options(embedding_demo PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(attention_demo
+    apps/attention_demo.cpp
+)
+
+target_link_libraries(attention_demo
+    PRIVATE
+        mini_gpt_attention
+        mini_gpt_embedding
+        mini_gpt_tokenizer
+)
+target_compile_features(attention_demo PRIVATE cxx_std_20)
+set_target_properties(attention_demo PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    target_compile_options(attention_demo PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(attention_demo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 include(CTest)
@@ -142,4 +180,19 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME embedding_tests COMMAND embedding_tests)
+
+    add_executable(attention_tests
+        tests/attention_tests.cpp
+    )
+
+    target_link_libraries(attention_tests PRIVATE mini_gpt_attention)
+    set_target_properties(attention_tests PROPERTIES CXX_EXTENSIONS OFF)
+
+    if(MSVC)
+        target_compile_options(attention_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(attention_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME attention_tests COMMAND attention_tests)
 endif()
