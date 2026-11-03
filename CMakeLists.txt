@@ -76,6 +76,72 @@ else()
     target_compile_options(mini_gpt_attention PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(mini_gpt_layer_norm STATIC
+    src/layer_norm.cpp
+)
+
+target_include_directories(mini_gpt_layer_norm
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(mini_gpt_layer_norm PUBLIC mini_gpt_tensor)
+target_compile_features(mini_gpt_layer_norm PUBLIC cxx_std_20)
+set_target_properties(mini_gpt_layer_norm PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    target_compile_options(mini_gpt_layer_norm PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(mini_gpt_layer_norm PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_library(mini_gpt_transformer_block STATIC
+    src/transformer_block.cpp
+)
+
+target_include_directories(mini_gpt_transformer_block
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(mini_gpt_transformer_block
+    PUBLIC
+        mini_gpt_attention
+        mini_gpt_layer_norm
+)
+target_compile_features(mini_gpt_transformer_block PUBLIC cxx_std_20)
+set_target_properties(mini_gpt_transformer_block PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    target_compile_options(mini_gpt_transformer_block PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(mini_gpt_transformer_block PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_library(mini_gpt_gpt STATIC
+    src/gpt.cpp
+)
+
+target_include_directories(mini_gpt_gpt
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(mini_gpt_gpt
+    PUBLIC
+        mini_gpt_embedding
+        mini_gpt_transformer_block
+        mini_gpt_tokenizer
+)
+target_compile_features(mini_gpt_gpt PUBLIC cxx_std_20)
+set_target_properties(mini_gpt_gpt PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    target_compile_options(mini_gpt_gpt PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(mini_gpt_gpt PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(tokenizer_demo
     apps/tokenizer_demo.cpp
 )
@@ -128,6 +194,43 @@ if(MSVC)
     target_compile_options(attention_demo PRIVATE /W4 /permissive- /utf-8)
 else()
     target_compile_options(attention_demo PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(transformer_demo
+    apps/transformer_demo.cpp
+)
+
+target_link_libraries(transformer_demo
+    PRIVATE
+        mini_gpt_transformer_block
+        mini_gpt_embedding
+        mini_gpt_tokenizer
+)
+target_compile_features(transformer_demo PRIVATE cxx_std_20)
+set_target_properties(transformer_demo PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    target_compile_options(transformer_demo PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(transformer_demo PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(gpt_demo
+    apps/gpt_demo.cpp
+)
+
+target_link_libraries(gpt_demo
+    PRIVATE
+        mini_gpt_gpt
+        mini_gpt_tokenizer
+)
+target_compile_features(gpt_demo PRIVATE cxx_std_20)
+set_target_properties(gpt_demo PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    target_compile_options(gpt_demo PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(gpt_demo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 include(CTest)
@@ -195,4 +298,34 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME attention_tests COMMAND attention_tests)
+
+    add_executable(transformer_block_tests
+        tests/transformer_block_tests.cpp
+    )
+
+    target_link_libraries(transformer_block_tests PRIVATE mini_gpt_transformer_block)
+    set_target_properties(transformer_block_tests PROPERTIES CXX_EXTENSIONS OFF)
+
+    if(MSVC)
+        target_compile_options(transformer_block_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(transformer_block_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME transformer_block_tests COMMAND transformer_block_tests)
+
+    add_executable(gpt_tests
+        tests/gpt_tests.cpp
+    )
+
+    target_link_libraries(gpt_tests PRIVATE mini_gpt_gpt)
+    set_target_properties(gpt_tests PROPERTIES CXX_EXTENSIONS OFF)
+
+    if(MSVC)
+        target_compile_options(gpt_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(gpt_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME gpt_tests COMMAND gpt_tests)
 endif()
