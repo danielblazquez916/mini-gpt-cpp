@@ -142,6 +142,25 @@ else()
     target_compile_options(mini_gpt_gpt PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
+add_library(mini_gpt_loss STATIC
+    src/cross_entropy.cpp
+)
+
+target_include_directories(mini_gpt_loss
+    PUBLIC
+        ${CMAKE_CURRENT_SOURCE_DIR}/include
+)
+
+target_link_libraries(mini_gpt_loss PUBLIC mini_gpt_tensor)
+target_compile_features(mini_gpt_loss PUBLIC cxx_std_20)
+set_target_properties(mini_gpt_loss PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    target_compile_options(mini_gpt_loss PRIVATE /W4 /permissive-)
+else()
+    target_compile_options(mini_gpt_loss PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
 add_executable(tokenizer_demo
     apps/tokenizer_demo.cpp
 )
@@ -231,6 +250,28 @@ if(MSVC)
     target_compile_options(gpt_demo PRIVATE /W4 /permissive- /utf-8)
 else()
     target_compile_options(gpt_demo PRIVATE -Wall -Wextra -Wpedantic)
+endif()
+
+add_executable(loss_demo
+    apps/loss_demo.cpp
+)
+
+target_link_libraries(loss_demo
+    PRIVATE
+        mini_gpt_loss
+        mini_gpt_gpt
+        mini_gpt_tokenizer
+)
+target_compile_features(loss_demo PRIVATE cxx_std_20)
+target_compile_definitions(loss_demo PRIVATE
+    MINI_GPT_LOSS_CORPUS_PATH="${CMAKE_CURRENT_SOURCE_DIR}/tests/data/conversations.txt"
+)
+set_target_properties(loss_demo PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MSVC)
+    target_compile_options(loss_demo PRIVATE /W4 /permissive- /utf-8)
+else()
+    target_compile_options(loss_demo PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 include(CTest)
@@ -328,4 +369,19 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME gpt_tests COMMAND gpt_tests)
+
+    add_executable(loss_tests
+        tests/loss_tests.cpp
+    )
+
+    target_link_libraries(loss_tests PRIVATE mini_gpt_loss)
+    set_target_properties(loss_tests PROPERTIES CXX_EXTENSIONS OFF)
+
+    if(MSVC)
+        target_compile_options(loss_tests PRIVATE /W4 /permissive-)
+    else()
+        target_compile_options(loss_tests PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
+    add_test(NAME loss_tests COMMAND loss_tests)
 endif()
