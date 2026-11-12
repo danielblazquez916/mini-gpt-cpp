@@ -1,5 +1,9 @@
 #include "mini_gpt/embedding.hpp"
 
+#ifdef MINI_GPT_ENABLE_CUDA
+#include "mini_gpt/cuda/ops.cuh"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -168,8 +172,27 @@ Tensor Embedding::token_forward(
     validate_batch(token_ids.size(), batch_size, seq_len, max_seq_len_);
 
     Tensor output = Tensor::zeros({batch_size, seq_len, embedding_dim_});
-    const float* weights = token_embeddings_.data().data();
-    float* output_data = output.data().data();
+    const float* weights = token_embeddings_.raw_data();
+    float* output_data = output.raw_data();
+#ifdef MINI_GPT_ENABLE_CUDA
+    for (const TokenId id : token_ids) {
+        if (id >= vocab_size_) {
+            throw std::out_of_range("Token ID is outside the embedding vocabulary");
+        }
+    }
+    cuda::embedding(
+        token_ids.data(),
+        weights,
+        nullptr,
+        output_data,
+        batch_size,
+        seq_len,
+        embedding_dim_,
+        vocab_size_,
+        max_seq_len_,
+        false);
+    return output;
+#else
     for (std::size_t batch = 0; batch < batch_size; ++batch) {
         for (std::size_t position = 0; position < seq_len; ++position) {
             const std::size_t token_index = batch * seq_len + position;
@@ -184,15 +207,38 @@ Tensor Embedding::token_forward(
         }
     }
     return output;
+#endif
 }
 
 Tensor Embedding::forward(
     std::span<const TokenId> token_ids,
     std::size_t batch_size,
     std::size_t seq_len) const {
+#ifdef MINI_GPT_ENABLE_CUDA
+    validate_shapes();
+    validate_batch(token_ids.size(), batch_size, seq_len, max_seq_len_);
+    for (const TokenId id : token_ids) {
+        if (id >= vocab_size_) {
+            throw std::out_of_range("Token ID is outside the embedding vocabulary");
+        }
+    }
+    Tensor output = Tensor::zeros({batch_size, seq_len, embedding_dim_});
+    cuda::embedding(
+        token_ids.data(),
+        token_embeddings_.raw_data(),
+        positional_embeddings_.raw_data(),
+        output.raw_data(),
+        batch_size,
+        seq_len,
+        embedding_dim_,
+        vocab_size_,
+        max_seq_len_,
+        true);
+    return output;
+#else
     Tensor output = token_forward(token_ids, batch_size, seq_len);
-    const float* positions = positional_embeddings_.data().data();
-    float* output_data = output.data().data();
+    const float* positions = positional_embeddings_.raw_data();
+    float* output_data = output.raw_data();
 
     for (std::size_t batch = 0; batch < batch_size; ++batch) {
         for (std::size_t position = 0; position < seq_len; ++position) {
@@ -206,6 +252,7 @@ Tensor Embedding::forward(
         }
     }
     return output;
+#endif
 }
 
 void Embedding::save(const std::filesystem::path& path) const {

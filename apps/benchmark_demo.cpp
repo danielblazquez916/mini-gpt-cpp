@@ -4,6 +4,11 @@
 #include "mini_gpt/data_loader.hpp"
 #include "mini_gpt/gpt.hpp"
 
+#ifdef MINI_GPT_ENABLE_CUDA
+#include "mini_gpt/cuda/memory.cuh"
+#include "mini_gpt/cuda/registry.cuh"
+#endif
+
 #include <algorithm>
 #include <chrono>
 #include <cmath>
@@ -76,6 +81,10 @@ int main(int argc, char** argv) {
             throw std::runtime_error("No se pudo obtener un batch 2 x 128");
         }
 
+#ifdef MINI_GPT_ENABLE_CUDA
+        mini_gpt::cuda::reset_transfer_stats();
+        mini_gpt::cuda::reset_peak_live_device_bytes();
+#endif
         const auto forward_start = Clock::now();
         const Tensor logits = model.forward(batch->inputs, batch->batch_size, batch->seq_len);
         const double forward_time = seconds(forward_start);
@@ -98,6 +107,9 @@ int main(int argc, char** argv) {
         const double gradient_norm = mini_gpt::clip_gradients(optimizer.parameters(), 1.0);
         optimizer.step();
         const double optimizer_time = seconds(optimizer_start);
+#ifdef MINI_GPT_ENABLE_CUDA
+        const auto step_transfers = mini_gpt::cuda::transfer_stats();
+#endif
         if (!std::isfinite(loss) || !std::isfinite(backward_loss) || !std::isfinite(gradient_norm)) {
             throw std::runtime_error("Valores no finitos durante el benchmark");
         }
@@ -141,7 +153,65 @@ int main(int argc, char** argv) {
                   << "\nVALIDATION_TOKENS," << validation_tokens
                   << "\nVALIDATION_LOSS," << validation_loss
                   << "\nVALIDATION_TOKENS_PER_SECOND," << validation_tokens / validation_time
+#ifdef MINI_GPT_ENABLE_CUDA
+                  << "\nCUDA_POOL_BYTES," << mini_gpt::cuda::cached_device_bytes()
+                  << "\nCUDA_LIVE_BYTES," << mini_gpt::cuda::live_device_bytes()
+                  << "\nCUDA_PEAK_LIVE_BYTES," << mini_gpt::cuda::peak_live_device_bytes()
+                  << "\nCUDA_STEP_HOST_TO_DEVICE_BYTES," << step_transfers.host_to_device_bytes
+                  << "\nCUDA_STEP_DEVICE_TO_HOST_BYTES," << step_transfers.device_to_host_bytes
+#endif
                   << '\n';
+#ifdef MINI_GPT_ENABLE_CUDA
+        auto warm_batch = loader.next_batch();
+        if (!warm_batch) {
+            throw std::runtime_error("No se pudo obtener el batch de estado estacionario");
+        }
+        mini_gpt::cuda::reset_transfer_stats();
+        mini_gpt::cuda::reset_peak_live_device_bytes();
+        const auto warm_forward_start = Clock::now();
+        const Tensor warm_logits = model.forward(
+            warm_batch->inputs, warm_batch->batch_size, warm_batch->seq_len);
+        const double warm_forward_time = seconds(warm_forward_start);
+        const auto warm_loss_start = Clock::now();
+        const float warm_loss = mini_gpt::cross_entropy(
+            warm_logits, warm_batch->targets, warm_batch->mask);
+        const double warm_loss_time = seconds(warm_loss_start);
+        model.zero_grad();
+        const auto warm_backward_start = Clock::now();
+        const float warm_backward_loss = model.backward(
+            warm_batch->inputs,
+            warm_batch->batch_size,
+            warm_batch->seq_len,
+            warm_batch->targets,
+            warm_batch->mask);
+        const double warm_backward_total_time = seconds(warm_backward_start);
+        const auto warm_optimizer_start = Clock::now();
+        const double warm_gradient_norm = mini_gpt::clip_gradients(optimizer.parameters(), 1.0);
+        optimizer.step();
+        const double warm_optimizer_time = seconds(warm_optimizer_start);
+        if (!std::isfinite(warm_loss) || !std::isfinite(warm_backward_loss) ||
+            !std::isfinite(warm_gradient_norm)) {
+            throw std::runtime_error("Valores no finitos durante el paso de estado estacionario");
+        }
+        const auto warm_transfers = mini_gpt::cuda::transfer_stats();
+        const double warm_total_step = warm_backward_total_time + warm_optimizer_time;
+        const double warm_backward_only = std::max(
+            0.0, warm_backward_total_time - warm_forward_time - warm_loss_time);
+        std::cout << "WARM_OPTIMIZER_STEP," << optimizer.step_count()
+                  << "\nWARM_LOSS," << warm_backward_loss
+                  << "\nWARM_METRIC,SECONDS,PERCENT_OF_STEP\n";
+        print_measurement("WARM_FORWARD", warm_forward_time, warm_total_step);
+        print_measurement("WARM_LOSS", warm_loss_time, warm_total_step);
+        print_measurement("WARM_BACKWARD_ONLY", warm_backward_only, warm_total_step);
+        print_measurement("WARM_ADAMW_CLIP", warm_optimizer_time, warm_total_step);
+        print_measurement("WARM_TOTAL_STEP", warm_total_step, warm_total_step);
+        std::cout << "WARM_TOKENS_PER_SECOND," << warm_batch->real_tokens / warm_total_step
+                  << "\nWARM_CUDA_POOL_BYTES," << mini_gpt::cuda::cached_device_bytes()
+                  << "\nWARM_CUDA_PEAK_LIVE_BYTES," << mini_gpt::cuda::peak_live_device_bytes()
+                  << "\nWARM_CUDA_HOST_TO_DEVICE_BYTES," << warm_transfers.host_to_device_bytes
+                  << "\nWARM_CUDA_DEVICE_TO_HOST_BYTES," << warm_transfers.device_to_host_bytes
+                  << '\n';
+#endif
     } catch (const std::exception& error) {
         std::cerr << "Error: " << error.what() << '\n';
         return 1;

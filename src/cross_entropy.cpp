@@ -1,5 +1,9 @@
 #include "mini_gpt/cross_entropy.hpp"
 
+#ifdef MINI_GPT_ENABLE_CUDA
+#include "mini_gpt/cuda/backward.cuh"
+#endif
+
 #include <algorithm>
 #include <cmath>
 #include <limits>
@@ -47,7 +51,35 @@ float cross_entropy(
         }
     }
 
-    const float* logit_data = logits.data().data();
+    const float* logit_data = logits.raw_data();
+#ifdef MINI_GPT_ENABLE_CUDA
+    std::size_t valid_positions = 0;
+    for (std::size_t position = 0; position < positions; ++position) {
+        if (!mask.empty() && mask[position] == 0) {
+            continue;
+        }
+        if (targets[position] >= vocab_size) {
+            throw std::out_of_range("Target token ID is outside the vocabulary");
+        }
+        ++valid_positions;
+    }
+    if (valid_positions == 0) {
+        throw std::invalid_argument("Cross-Entropy requires at least one valid position");
+    }
+    const float loss = cuda::cross_entropy(
+        logit_data,
+        targets.data(),
+        mask.empty() ? nullptr : mask.data(),
+        nullptr,
+        batch_size,
+        seq_len,
+        vocab_size,
+        valid_positions);
+    if (!std::isfinite(loss)) {
+        throw std::invalid_argument("Logits must be finite at valid positions");
+    }
+    return loss;
+#else
     double total_loss = 0.0;
     std::size_t valid_positions = 0;
     for (std::size_t position = 0; position < positions; ++position) {
@@ -81,6 +113,7 @@ float cross_entropy(
         throw std::invalid_argument("Cross-Entropy requires at least one valid position");
     }
     return static_cast<float>(total_loss / static_cast<double>(valid_positions));
+#endif
 }
 
 Tensor cross_entropy_backward(
@@ -116,8 +149,31 @@ Tensor cross_entropy_backward(
     }
 
     Tensor gradient = Tensor::zeros(logits.shape());
-    const float* logit_data = logits.data().data();
-    float* gradient_data = gradient.data().data();
+    const float* logit_data = logits.raw_data();
+    float* gradient_data = gradient.raw_data();
+#ifdef MINI_GPT_ENABLE_CUDA
+    for (std::size_t position = 0; position < positions; ++position) {
+        if (!mask.empty() && mask[position] == 0) {
+            continue;
+        }
+        if (targets[position] >= vocab_size) {
+            throw std::out_of_range("Target token ID is outside the vocabulary");
+        }
+    }
+    const float loss = cuda::cross_entropy(
+        logit_data,
+        targets.data(),
+        mask.empty() ? nullptr : mask.data(),
+        gradient_data,
+        batch_size,
+        seq_len,
+        vocab_size,
+        valid_positions);
+    if (!std::isfinite(loss)) {
+        throw std::invalid_argument("Logits must be finite at valid positions");
+    }
+    return gradient;
+#else
     const double scale = 1.0 / static_cast<double>(valid_positions);
     for (std::size_t position = 0; position < positions; ++position) {
         if (!mask.empty() && mask[position] == 0) {
@@ -151,6 +207,7 @@ Tensor cross_entropy_backward(
         }
     }
     return gradient;
+#endif
 }
 
 float perplexity(float loss) {

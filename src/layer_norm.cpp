@@ -1,5 +1,9 @@
 #include "mini_gpt/layer_norm.hpp"
 
+#ifdef MINI_GPT_ENABLE_CUDA
+#include "mini_gpt/cuda/ops.cuh"
+#endif
+
 #include <cmath>
 #include <stdexcept>
 #include <string>
@@ -36,12 +40,23 @@ Tensor LayerNorm::forward(const Tensor& input) const {
     }
 
     Tensor output = Tensor::zeros(input.shape());
-    const float* input_data = input.data().data();
-    const float* gamma_data = gamma_.data().data();
-    const float* beta_data = beta_.data().data();
-    float* output_data = output.data().data();
+    const float* input_data = input.raw_data();
+    const float* gamma_data = gamma_.raw_data();
+    const float* beta_data = beta_.raw_data();
+    float* output_data = output.raw_data();
     const std::size_t rows = input.size() / normalized_dim_;
 
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::layer_norm(
+        input_data,
+        gamma_data,
+        beta_data,
+        output_data,
+        rows,
+        normalized_dim_,
+        epsilon_);
+    return output;
+#else
     for (std::size_t row = 0; row < rows; ++row) {
         const std::size_t offset = row * normalized_dim_;
         double sum = 0.0;
@@ -68,6 +83,7 @@ Tensor LayerNorm::forward(const Tensor& input) const {
         }
     }
     return output;
+#endif
 }
 
 std::size_t LayerNorm::normalized_dim() const noexcept {

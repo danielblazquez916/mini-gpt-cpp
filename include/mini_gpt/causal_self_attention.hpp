@@ -27,7 +27,9 @@ public:
         std::uint32_t seed = 42);
 
     [[nodiscard]] Tensor forward(const Tensor& input) const;
-    [[nodiscard]] AttentionForwardResult forward_with_details(const Tensor& input) const;
+    [[nodiscard]] AttentionForwardResult forward_with_details(
+        const Tensor& input,
+        bool include_logits = true) const;
     [[nodiscard]] AttentionForwardResult forward_from_qkv(
         const Tensor& queries,
         const Tensor& keys,
@@ -60,7 +62,8 @@ private:
     [[nodiscard]] AttentionForwardResult attend(
         Tensor queries,
         Tensor keys,
-        Tensor values) const;
+        Tensor values,
+        bool include_logits) const;
     void validate_parameter_shapes() const;
 
     std::size_t embedding_dim_;

@@ -3,6 +3,11 @@
 #include "mini_gpt/cross_entropy.hpp"
 #include "mini_gpt/gpt.hpp"
 
+#ifdef MINI_GPT_ENABLE_CUDA
+#include "mini_gpt/cuda/backward.cuh"
+#include "mini_gpt/cuda/ops.cuh"
+#endif
+
 #include <cmath>
 #include <limits>
 #include <stdexcept>
@@ -30,12 +35,24 @@ LinearBackwardResult linear_backward(
 
     LinearBackwardResult result{
         Tensor::zeros(input.shape()), Tensor::zeros(weights.shape())};
-    const float* input_data = input.data().data();
-    const float* weight_data = weights.data().data();
-    const float* gradient_data = output_gradient.data().data();
-    float* input_gradient = result.input_gradient.data().data();
-    float* weight_gradient = result.weight_gradient.data().data();
+    const float* input_data = input.raw_data();
+    const float* weight_data = weights.raw_data();
+    const float* gradient_data = output_gradient.raw_data();
+    float* input_gradient = result.input_gradient.raw_data();
+    float* weight_gradient = result.weight_gradient.raw_data();
 
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::linear_backward(
+        input_data,
+        weight_data,
+        gradient_data,
+        input_gradient,
+        weight_gradient,
+        rows,
+        input_dim,
+        output_dim);
+    return result;
+#else
     for (std::size_t row = 0; row < rows; ++row) {
         for (std::size_t inner = 0; inner < input_dim; ++inner) {
             for (std::size_t output = 0; output < output_dim; ++output) {
@@ -48,6 +65,7 @@ LinearBackwardResult linear_backward(
         }
     }
     return result;
+#endif
 }
 
 Tensor gelu_backward(const Tensor& input, const Tensor& output_gradient) {
@@ -56,6 +74,11 @@ Tensor gelu_backward(const Tensor& input, const Tensor& output_gradient) {
     }
 
     Tensor input_gradient = Tensor::zeros(input.shape());
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::gelu_backward(
+        input.raw_data(), output_gradient.raw_data(), input_gradient.raw_data(), input.size());
+    return input_gradient;
+#else
     for (std::size_t i = 0; i < input.size(); ++i) {
         const double value = input.data()[i];
         const double cdf = 0.5 * (1.0 + std::erf(value / std::sqrt(2.0)));
@@ -64,6 +87,7 @@ Tensor gelu_backward(const Tensor& input, const Tensor& output_gradient) {
             static_cast<double>(output_gradient.data()[i]) * (cdf + value * pdf));
     }
     return input_gradient;
+#endif
 }
 
 LayerNormBackwardResult layer_norm_backward(
@@ -82,6 +106,19 @@ LayerNormBackwardResult layer_norm_backward(
         Tensor::zeros(input.shape()),
         LayerNormGradients{Tensor::zeros({dimension}), Tensor::zeros({dimension})}};
     const std::size_t rows = input.size() / dimension;
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::layer_norm_backward(
+        input.raw_data(),
+        layer_norm.gamma().raw_data(),
+        output_gradient.raw_data(),
+        result.input_gradient.raw_data(),
+        result.parameters.gamma.raw_data(),
+        result.parameters.beta.raw_data(),
+        rows,
+        dimension,
+        layer_norm.epsilon());
+    return result;
+#else
     std::vector<double> normalized(dimension);
     std::vector<double> normalized_gradient(dimension);
 
@@ -122,6 +159,7 @@ LayerNormBackwardResult layer_norm_backward(
         }
     }
     return result;
+#endif
 }
 
 EmbeddingGradients embedding_backward(
@@ -141,6 +179,24 @@ EmbeddingGradients embedding_backward(
     EmbeddingGradients gradients{
         Tensor::zeros(embedding.token_embeddings().shape()),
         Tensor::zeros(embedding.positional_embeddings().shape())};
+#ifdef MINI_GPT_ENABLE_CUDA
+    for (const std::uint32_t id : token_ids) {
+        if (id >= embedding.vocab_size()) {
+            throw std::out_of_range("Token ID is outside the embedding vocabulary");
+        }
+    }
+    cuda::embedding_backward(
+        token_ids.data(),
+        output_gradient.raw_data(),
+        gradients.token_embeddings.raw_data(),
+        gradients.positional_embeddings.raw_data(),
+        batch_size,
+        seq_len,
+        dimension,
+        embedding.vocab_size(),
+        embedding.max_seq_len());
+    return gradients;
+#else
     for (std::size_t batch = 0; batch < batch_size; ++batch) {
         for (std::size_t position = 0; position < seq_len; ++position) {
             const std::size_t index = batch * seq_len + position;
@@ -156,6 +212,7 @@ EmbeddingGradients embedding_backward(
         }
     }
     return gradients;
+#endif
 }
 
 AttentionBackwardResult attention_backward(
@@ -167,18 +224,35 @@ AttentionBackwardResult attention_backward(
         throw std::invalid_argument("Incompatible shapes in attention backward");
     }
 
-    const auto forward = attention.forward_with_details(input);
-    const auto output_backward =
+    const auto forward = attention.forward_with_details(input, false);
+    auto output_backward =
         linear_backward(forward.context, attention.output_weights(), output_gradient);
     const std::size_t batch_size = input.shape()[0];
     const std::size_t seq_len = input.shape()[1];
+#ifndef MINI_GPT_ENABLE_CUDA
     const std::size_t embedding_dim = attention.embedding_dim();
+#endif
     const std::size_t num_heads = attention.num_heads();
     const std::size_t head_dim = attention.head_dim();
 
     Tensor queries_gradient = Tensor::zeros(forward.queries.shape());
     Tensor keys_gradient = Tensor::zeros(forward.keys.shape());
     Tensor values_gradient = Tensor::zeros(forward.values.shape());
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::causal_attention_backward(
+        forward.queries.raw_data(),
+        forward.keys.raw_data(),
+        forward.values.raw_data(),
+        forward.probabilities.raw_data(),
+        output_backward.input_gradient.raw_data(),
+        queries_gradient.raw_data(),
+        keys_gradient.raw_data(),
+        values_gradient.raw_data(),
+        batch_size,
+        num_heads,
+        seq_len,
+        head_dim);
+#else
     std::vector<double> probability_gradients(seq_len);
     const float scale = 1.0F / std::sqrt(static_cast<float>(head_dim));
 
@@ -228,10 +302,22 @@ AttentionBackwardResult attention_backward(
             }
         }
     }
+#endif
 
     Tensor flat_queries_gradient = Tensor::zeros(input.shape());
     Tensor flat_keys_gradient = Tensor::zeros(input.shape());
     Tensor flat_values_gradient = Tensor::zeros(input.shape());
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::flatten_heads(
+        queries_gradient.raw_data(), flat_queries_gradient.raw_data(),
+        batch_size, num_heads, seq_len, head_dim);
+    cuda::flatten_heads(
+        keys_gradient.raw_data(), flat_keys_gradient.raw_data(),
+        batch_size, num_heads, seq_len, head_dim);
+    cuda::flatten_heads(
+        values_gradient.raw_data(), flat_values_gradient.raw_data(),
+        batch_size, num_heads, seq_len, head_dim);
+#else
     for (std::size_t batch = 0; batch < batch_size; ++batch) {
         for (std::size_t head = 0; head < num_heads; ++head) {
             for (std::size_t position = 0; position < seq_len; ++position) {
@@ -248,6 +334,7 @@ AttentionBackwardResult attention_backward(
             }
         }
     }
+#endif
 
     auto query_backward = linear_backward(input, attention.q_weights(), flat_queries_gradient);
     auto key_backward = linear_backward(input, attention.k_weights(), flat_keys_gradient);
@@ -274,6 +361,16 @@ Tensor linear_forward(const Tensor& input, const Tensor& weights) {
     const std::size_t rows = batch_size * seq_len;
     Tensor output = Tensor::zeros({batch_size, seq_len, output_dim});
 
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::linear(
+        input.raw_data(),
+        weights.raw_data(),
+        output.raw_data(),
+        rows,
+        input_dim,
+        output_dim);
+    return output;
+#else
     for (std::size_t row = 0; row < rows; ++row) {
         for (std::size_t inner = 0; inner < input_dim; ++inner) {
             const float input_value = input.data()[row * input_dim + inner];
@@ -284,15 +381,20 @@ Tensor linear_forward(const Tensor& input, const Tensor& weights) {
         }
     }
     return output;
+#endif
 }
 
 void accumulate(Tensor& target, const Tensor& source) {
     if (target.shape() != source.shape()) {
         throw std::logic_error("Gradient shapes do not match during accumulation");
     }
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::add_to(target.raw_data(), source.raw_data(), target.size());
+#else
     for (std::size_t i = 0; i < target.size(); ++i) {
         target.data()[i] += source.data()[i];
     }
+#endif
 }
 
 void accumulate(LayerNormGradients& target, const LayerNormGradients& source) {
@@ -343,10 +445,10 @@ TransformerBlockBackwardResult transformer_block_backward(
         attention_backward(block.attention(), normalized_attention, residual_gradient);
     auto norm1_backward =
         layer_norm_backward(block.norm1(), input, attention_backward_result.input_gradient);
-    const Tensor input_gradient = residual_gradient + norm1_backward.input_gradient;
+    Tensor input_gradient = residual_gradient + norm1_backward.input_gradient;
 
     return TransformerBlockBackwardResult{
-        input_gradient,
+        std::move(input_gradient),
         TransformerBlockGradients{
             std::move(norm1_backward.parameters),
             std::move(norm2_backward.parameters),
@@ -366,11 +468,11 @@ float GPT::backward(
     block_inputs.reserve(blocks_.size());
     Tensor hidden = embedding_.forward(token_ids, batch_size, seq_len);
     for (const TransformerBlock& block : blocks_) {
-        block_inputs.push_back(hidden);
-        hidden = block.forward(hidden);
+        block_inputs.push_back(std::move(hidden));
+        hidden = block.forward(block_inputs.back());
     }
 
-    const Tensor final_input = hidden;
+    const Tensor final_input = std::move(hidden);
     const Tensor features = final_norm_.forward(final_input);
     const Tensor logits = linear_forward(features, output_weights_);
     const float loss = cross_entropy(logits, targets, mask);
@@ -381,7 +483,7 @@ float GPT::backward(
     auto final_norm_backward =
         layer_norm_backward(final_norm_, final_input, output_backward.input_gradient);
     accumulate(gradients_.final_norm, final_norm_backward.parameters);
-    hidden = final_norm_backward.input_gradient;
+    hidden = std::move(final_norm_backward.input_gradient);
 
     for (std::size_t layer = blocks_.size(); layer-- > 0;) {
         auto block_backward = transformer_block_backward(

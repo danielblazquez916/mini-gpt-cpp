@@ -2,6 +2,10 @@
 
 #include "mini_gpt/bpe_tokenizer.hpp"
 
+#ifdef MINI_GPT_ENABLE_CUDA
+#include "mini_gpt/cuda/ops.cuh"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -43,9 +47,13 @@ Tensor linear(const Tensor& input, const Tensor& weights) {
     const std::size_t rows = batch_size * seq_len;
 
     Tensor output = Tensor::zeros({batch_size, seq_len, output_dim});
-    const float* input_data = input.data().data();
-    const float* weight_data = weights.data().data();
-    float* output_data = output.data().data();
+    const float* input_data = input.raw_data();
+    const float* weight_data = weights.raw_data();
+    float* output_data = output.raw_data();
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::linear(input_data, weight_data, output_data, rows, input_dim, output_dim);
+    return output;
+#else
     for (std::size_t row = 0; row < rows; ++row) {
         for (std::size_t inner = 0; inner < input_dim; ++inner) {
             const float input_value = input_data[row * input_dim + inner];
@@ -56,6 +64,7 @@ Tensor linear(const Tensor& input, const Tensor& weights) {
         }
     }
     return output;
+#endif
 }
 
 void write_u32(std::ofstream& file, std::uint32_t value) {
@@ -626,7 +635,11 @@ void GPT::zero_grad() {
         if (gradient.shape() != parameter.shape()) {
             gradient = Tensor::zeros(parameter.shape());
         } else {
+#ifdef MINI_GPT_ENABLE_CUDA
+            cuda::zero(gradient.raw_data(), gradient.size());
+#else
             std::fill(gradient.data().begin(), gradient.data().end(), 0.0F);
+#endif
         }
     };
 

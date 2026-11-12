@@ -1,5 +1,9 @@
 #include "mini_gpt/transformer_block.hpp"
 
+#ifdef MINI_GPT_ENABLE_CUDA
+#include "mini_gpt/cuda/ops.cuh"
+#endif
+
 #include <array>
 #include <bit>
 #include <cmath>
@@ -35,9 +39,13 @@ Tensor linear(const Tensor& input, const Tensor& weights) {
     const std::size_t rows = batch_size * seq_len;
 
     Tensor output = Tensor::zeros({batch_size, seq_len, output_dim});
-    const float* input_data = input.data().data();
-    const float* weight_data = weights.data().data();
-    float* output_data = output.data().data();
+    const float* input_data = input.raw_data();
+    const float* weight_data = weights.raw_data();
+    float* output_data = output.raw_data();
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::linear(input_data, weight_data, output_data, rows, input_dim, output_dim);
+    return output;
+#else
     for (std::size_t row = 0; row < rows; ++row) {
         for (std::size_t inner = 0; inner < input_dim; ++inner) {
             const float input_value = input_data[row * input_dim + inner];
@@ -48,6 +56,7 @@ Tensor linear(const Tensor& input, const Tensor& weights) {
         }
     }
     return output;
+#endif
 }
 
 void write_u32(std::ofstream& file, std::uint32_t value) {
@@ -156,6 +165,10 @@ Tensor read_tensor(
 
 Tensor gelu(const Tensor& input) {
     Tensor output = Tensor::zeros(input.shape());
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::gelu(input.raw_data(), output.raw_data(), input.size());
+    return output;
+#else
     for (std::size_t i = 0; i < input.size(); ++i) {
         const double value = input.data()[i];
         const double activated =
@@ -163,6 +176,7 @@ Tensor gelu(const Tensor& input) {
         output.data()[i] = static_cast<float>(activated);
     }
     return output;
+#endif
 }
 
 TransformerBlock::TransformerBlock(

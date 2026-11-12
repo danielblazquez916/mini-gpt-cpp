@@ -1,5 +1,9 @@
 #include "mini_gpt/adamw.hpp"
 
+#ifdef MINI_GPT_ENABLE_CUDA
+#include "mini_gpt/cuda/backward.cuh"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -152,17 +156,40 @@ AdamWParameters gpt_parameters(GPT& model) {
 }
 
 double gradient_global_norm(const AdamWParameters& parameters) {
+#ifdef MINI_GPT_ENABLE_CUDA
+    std::vector<std::pair<const float*, std::size_t>> gradients;
+    gradients.reserve(parameters.size());
+#endif
+#ifndef MINI_GPT_ENABLE_CUDA
     double squared_sum = 0.0;
+#endif
     for (const AdamWParameter& binding : parameters) {
         validate_binding(binding);
+#ifdef MINI_GPT_ENABLE_CUDA
+        gradients.emplace_back(binding.gradient->raw_data(), binding.gradient->size());
+#else
         for (const float value : binding.gradient->data()) {
             if (!std::isfinite(value)) {
                 throw std::runtime_error("Non-finite gradient in " + binding.name);
             }
             squared_sum += static_cast<double>(value) * value;
         }
+#endif
     }
+#ifdef MINI_GPT_ENABLE_CUDA
+    const double norm = cuda::gradient_global_norm(gradients);
+    if (!std::isfinite(norm)) {
+        for (const AdamWParameter& binding : parameters) {
+            if (!cuda::all_finite(binding.gradient->raw_data(), binding.gradient->size())) {
+                throw std::runtime_error("Non-finite gradient in " + binding.name);
+            }
+        }
+        throw std::runtime_error("Non-finite global gradient norm");
+    }
+    return norm;
+#else
     return std::sqrt(squared_sum);
+#endif
 }
 
 double clip_gradients(const AdamWParameters& parameters, double max_norm) {
@@ -173,9 +200,13 @@ double clip_gradients(const AdamWParameters& parameters, double max_norm) {
     if (norm > max_norm) {
         const double scale = max_norm / norm;
         for (const AdamWParameter& binding : parameters) {
+#ifdef MINI_GPT_ENABLE_CUDA
+            cuda::scale(binding.gradient->raw_data(), binding.gradient->size(), static_cast<float>(scale));
+#else
             for (float& value : binding.gradient->data()) {
                 value = static_cast<float>(value * scale);
             }
+#endif
         }
     }
     return norm;
@@ -199,13 +230,29 @@ void AdamW::step() {
     }
     ++step_count_;
 
-    const double beta1 = config_.beta1;
-    const double beta2 = config_.beta2;
-    const double first_correction = 1.0 - std::pow(beta1, static_cast<double>(step_count_));
-    const double second_correction = 1.0 - std::pow(beta2, static_cast<double>(step_count_));
     for (std::size_t index = 0; index < parameters_.size(); ++index) {
         const AdamWParameter& binding = parameters_[index];
         State& state = states_[index];
+#ifdef MINI_GPT_ENABLE_CUDA
+        cuda::adamw_update(
+            binding.parameter->raw_data(),
+            binding.gradient->raw_data(),
+            state.first_moment.raw_data(),
+            state.second_moment.raw_data(),
+            binding.parameter->size(),
+            config_.learning_rate,
+            config_.beta1,
+            config_.beta2,
+            config_.epsilon,
+            config_.weight_decay,
+            binding.weight_decay,
+            step_count_);
+        continue;
+#else
+        const double beta1 = config_.beta1;
+        const double beta2 = config_.beta2;
+        const double first_correction = 1.0 - std::pow(beta1, static_cast<double>(step_count_));
+        const double second_correction = 1.0 - std::pow(beta2, static_cast<double>(step_count_));
         for (std::size_t i = 0; i < binding.parameter->size(); ++i) {
             const double gradient = binding.gradient->data()[i];
             const double first = beta1 * state.first_moment.data()[i] +
@@ -226,6 +273,7 @@ void AdamW::step() {
             binding.parameter->data()[i] =
                 static_cast<float>(parameter - adam_update - decay_update);
         }
+#endif
     }
 }
 
@@ -371,6 +419,14 @@ void AdamW::validate_before_step() const {
             states_[index].second_moment.shape() != binding.parameter->shape()) {
             throw std::logic_error("AdamW state dimensions do not match parameters");
         }
+#ifdef MINI_GPT_ENABLE_CUDA
+        if (!cuda::all_finite(binding.parameter->raw_data(), binding.parameter->size())) {
+            throw std::runtime_error("Non-finite parameter in " + binding.name);
+        }
+        if (!cuda::all_finite(binding.gradient->raw_data(), binding.gradient->size())) {
+            throw std::runtime_error("Non-finite gradient in " + binding.name);
+        }
+#else
         for (const float value : binding.parameter->data()) {
             if (!std::isfinite(value)) {
                 throw std::runtime_error("Non-finite parameter in " + binding.name);
@@ -381,6 +437,7 @@ void AdamW::validate_before_step() const {
                 throw std::runtime_error("Non-finite gradient in " + binding.name);
             }
         }
+#endif
     }
 }
 

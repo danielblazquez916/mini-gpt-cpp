@@ -2,9 +2,33 @@ cmake_minimum_required(VERSION 3.20)
 
 project(mini_gpt VERSION 0.1 LANGUAGES CXX)
 
+option(MINI_GPT_ENABLE_CUDA "Enable CUDA acceleration with MSVC" ${MSVC})
+
+if(MINI_GPT_ENABLE_CUDA)
+    if(NOT MSVC)
+        message(FATAL_ERROR "CUDA on Windows requires the MSVC host compiler")
+    endif()
+
+    include(CheckLanguage)
+    check_language(CUDA)
+    if(NOT CMAKE_CUDA_COMPILER)
+        message(FATAL_ERROR "CUDA Toolkit with NVCC is required")
+    endif()
+
+    enable_language(CUDA)
+    find_package(CUDAToolkit REQUIRED)
+    set(CMAKE_CUDA_STANDARD 20)
+    set(CMAKE_CUDA_STANDARD_REQUIRED ON)
+    set(CMAKE_CUDA_ARCHITECTURES 86)
+endif()
+
 add_library(mini_gpt_tensor STATIC
     src/tensor.cpp
 )
+
+if(MSVC)
+    add_compile_definitions(NOMINMAX)
+endif()
 
 target_include_directories(mini_gpt_tensor
     PUBLIC
@@ -13,6 +37,24 @@ target_include_directories(mini_gpt_tensor
 
 target_compile_features(mini_gpt_tensor PUBLIC cxx_std_20)
 set_target_properties(mini_gpt_tensor PROPERTIES CXX_EXTENSIONS OFF)
+
+if(MINI_GPT_ENABLE_CUDA)
+    add_library(mini_gpt_cuda STATIC
+        src/cuda/matmul.cu
+        src/cuda/ops.cu
+        src/cuda/backward.cu
+        src/cuda/memory.cu
+        src/cuda/registry.cu
+    )
+
+    target_include_directories(mini_gpt_cuda
+        PUBLIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/include
+    )
+    target_link_libraries(mini_gpt_cuda PUBLIC CUDA::cublas CUDA::cudart)
+    target_compile_definitions(mini_gpt_tensor PUBLIC MINI_GPT_ENABLE_CUDA)
+    target_link_libraries(mini_gpt_tensor PUBLIC mini_gpt_cuda)
+endif()
 
 if(MSVC)
     target_compile_options(mini_gpt_tensor PRIVATE /W4 /permissive-)
@@ -719,4 +761,23 @@ if(BUILD_TESTING)
     endif()
 
     add_test(NAME inference_tests COMMAND inference_tests)
+
+    if(MINI_GPT_ENABLE_CUDA)
+        add_executable(cuda_smoke_tests
+            tests/cuda_smoke_tests.cu
+        )
+
+        target_link_libraries(cuda_smoke_tests PRIVATE CUDA::cudart)
+        set_target_properties(cuda_smoke_tests PROPERTIES CUDA_STANDARD 20)
+        add_test(NAME cuda_smoke_tests COMMAND cuda_smoke_tests)
+
+        add_executable(cuda_matmul_tests
+            tests/cuda_matmul_tests.cpp
+        )
+
+        target_link_libraries(cuda_matmul_tests PRIVATE mini_gpt_tensor)
+        set_target_properties(cuda_matmul_tests PROPERTIES CXX_EXTENSIONS OFF)
+        add_test(NAME cuda_matmul_tests COMMAND cuda_matmul_tests)
+
+    endif()
 endif()

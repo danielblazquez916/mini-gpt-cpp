@@ -15,6 +15,11 @@ public:
 
     explicit Tensor(Shape shape);
     Tensor(Shape shape, std::vector<float> data);
+    Tensor(const Tensor& other);
+    Tensor(Tensor&& other) noexcept;
+    Tensor& operator=(const Tensor& other);
+    Tensor& operator=(Tensor&& other) noexcept;
+    ~Tensor();
 
     [[nodiscard]] static Tensor zeros(Shape shape);
     [[nodiscard]] static Tensor ones(Shape shape);
@@ -33,6 +38,10 @@ public:
 
     [[nodiscard]] std::span<float> data() noexcept;
     [[nodiscard]] std::span<const float> data() const noexcept;
+
+    // Acceso interno sin sincronización para los wrappers de cálculo CUDA.
+    [[nodiscard]] float* raw_data() noexcept;
+    [[nodiscard]] const float* raw_data() const noexcept;
 
     float& at(std::initializer_list<std::size_t> indices);
     [[nodiscard]] const float& at(std::initializer_list<std::size_t> indices) const;

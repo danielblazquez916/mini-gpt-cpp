@@ -64,7 +64,7 @@ std::string normalized_path(const std::filesystem::path& path) {
 
 void print_help() {
     std::cout
-        << "gpt_train - Entrena o reanuda un GPT en CPU\n\n"
+        << "gpt_train - Entrena o reanuda un GPT\n\n"
         << "Desde cero:\n"
         << "  gpt_train --corpus <ruta> --tokenizer <bpe> [opciones]\n"
         << "Reanudar:\n"

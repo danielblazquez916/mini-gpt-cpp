@@ -299,8 +299,9 @@ int main(int argc, char** argv) {
             }
             const auto generated = model.generate(context, config);
             const std::string text = tokenizer.decode(generated);
+            const std::string printable_text = is_valid_utf8(text) ? text : escape_text(text);
             std::cout << (mode == mini_gpt::ChatMode::chat ? "asistente> " : "continuación> ")
-                      << text << '\n';
+                      << printable_text << '\n';
             return generated;
         };
 

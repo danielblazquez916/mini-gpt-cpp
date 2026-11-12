@@ -1,5 +1,9 @@
 #include "mini_gpt/causal_self_attention.hpp"
 
+#ifdef MINI_GPT_ENABLE_CUDA
+#include "mini_gpt/cuda/ops.cuh"
+#endif
+
 #include <algorithm>
 #include <array>
 #include <bit>
@@ -43,9 +47,13 @@ Tensor linear(const Tensor& input, const Tensor& weights) {
     const std::size_t rows = batch_size * seq_len;
 
     Tensor output = Tensor::zeros({batch_size, seq_len, output_dim});
-    const float* input_data = input.data().data();
-    const float* weight_data = weights.data().data();
-    float* output_data = output.data().data();
+    const float* input_data = input.raw_data();
+    const float* weight_data = weights.raw_data();
+    float* output_data = output.raw_data();
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::linear(input_data, weight_data, output_data, rows, input_dim, output_dim);
+    return output;
+#else
     for (std::size_t row = 0; row < rows; ++row) {
         for (std::size_t inner = 0; inner < input_dim; ++inner) {
             const float input_value = input_data[row * input_dim + inner];
@@ -56,6 +64,7 @@ Tensor linear(const Tensor& input, const Tensor& weights) {
         }
     }
     return output;
+#endif
 }
 
 Tensor split_heads(
@@ -64,10 +73,17 @@ Tensor split_heads(
     std::size_t head_dim) {
     const std::size_t batch_size = input.shape()[0];
     const std::size_t seq_len = input.shape()[1];
+#ifndef MINI_GPT_ENABLE_CUDA
     const std::size_t embedding_dim = input.shape()[2];
+#endif
     Tensor output = Tensor::zeros({batch_size, num_heads, seq_len, head_dim});
-    const float* input_data = input.data().data();
-    float* output_data = output.data().data();
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::split_heads(
+        input.raw_data(), output.raw_data(), batch_size, num_heads, seq_len, head_dim);
+    return output;
+#else
+    const float* input_data = input.raw_data();
+    float* output_data = output.raw_data();
 
     for (std::size_t batch = 0; batch < batch_size; ++batch) {
         for (std::size_t head = 0; head < num_heads; ++head) {
@@ -81,6 +97,7 @@ Tensor split_heads(
         }
     }
     return output;
+#endif
 }
 
 void write_u32(std::ofstream& file, std::uint32_t value) {
@@ -221,11 +238,13 @@ CausalSelfAttention::CausalSelfAttention(
 }
 
 Tensor CausalSelfAttention::forward(const Tensor& input) const {
-    AttentionForwardResult result = forward_with_details(input);
+    AttentionForwardResult result = forward_with_details(input, false);
     return std::move(result.output);
 }
 
-AttentionForwardResult CausalSelfAttention::forward_with_details(const Tensor& input) const {
+AttentionForwardResult CausalSelfAttention::forward_with_details(
+    const Tensor& input,
+    bool include_logits) const {
     validate_parameter_shapes();
     if (input.rank() != 3 || input.shape()[2] != embedding_dim_) {
         throw std::invalid_argument(
@@ -235,7 +254,7 @@ AttentionForwardResult CausalSelfAttention::forward_with_details(const Tensor& i
     Tensor queries = split_heads(linear(input, q_weights_), num_heads_, head_dim_);
     Tensor keys = split_heads(linear(input, k_weights_), num_heads_, head_dim_);
     Tensor values = split_heads(linear(input, v_weights_), num_heads_, head_dim_);
-    return attend(std::move(queries), std::move(keys), std::move(values));
+    return attend(std::move(queries), std::move(keys), std::move(values), include_logits);
 }
 
 AttentionForwardResult CausalSelfAttention::forward_from_qkv(
@@ -249,32 +268,51 @@ AttentionForwardResult CausalSelfAttention::forward_from_qkv(
         throw std::invalid_argument(
             "Q, K and V must have matching shape [batch_size, num_heads, seq_len, head_dim]");
     }
-    return attend(queries, keys, values);
+    return attend(queries, keys, values, true);
 }
 
 AttentionForwardResult CausalSelfAttention::attend(
     Tensor queries,
     Tensor keys,
-    Tensor values) const {
+    Tensor values,
+    bool include_logits) const {
     const std::size_t batch_size = queries.shape()[0];
     const std::size_t seq_len = queries.shape()[2];
-    Tensor logits = Tensor::zeros({batch_size, num_heads_, seq_len, seq_len});
-    std::fill(
-        logits.data().begin(),
-        logits.data().end(),
-        -std::numeric_limits<float>::infinity());
+    Tensor logits = include_logits
+        ? Tensor::zeros({batch_size, num_heads_, seq_len, seq_len})
+        : Tensor::zeros({0});
+    if (include_logits) {
+        std::fill(
+            logits.data().begin(),
+            logits.data().end(),
+            -std::numeric_limits<float>::infinity());
+    }
     Tensor probabilities = Tensor::zeros({batch_size, num_heads_, seq_len, seq_len});
     Tensor combined = Tensor::zeros({batch_size, seq_len, embedding_dim_});
 
-    const float* query_data = queries.data().data();
-    const float* key_data = keys.data().data();
-    const float* value_data = values.data().data();
-    float* logit_data = logits.data().data();
-    float* probability_data = probabilities.data().data();
-    float* combined_data = combined.data().data();
+    const float* query_data = queries.raw_data();
+    const float* key_data = keys.raw_data();
+    const float* value_data = values.raw_data();
+    float* logit_data = logits.raw_data();
+    float* probability_data = probabilities.raw_data();
+    float* combined_data = combined.raw_data();
+
+#ifdef MINI_GPT_ENABLE_CUDA
+    cuda::causal_attention(
+        query_data,
+        key_data,
+        value_data,
+        logit_data,
+        probability_data,
+        combined_data,
+        batch_size,
+        num_heads_,
+        seq_len,
+        head_dim_,
+        include_logits);
+#else
     const float scale = 1.0F / std::sqrt(static_cast<float>(head_dim_));
     std::vector<float> scores(seq_len);
-
     for (std::size_t batch = 0; batch < batch_size; ++batch) {
         for (std::size_t head = 0; head < num_heads_; ++head) {
             for (std::size_t query = 0; query < seq_len; ++query) {
@@ -294,7 +332,9 @@ AttentionForwardResult CausalSelfAttention::attend(
                                  key_data[key_offset + dimension];
                     }
                     scores[key] = score * scale;
-                    logit_data[probability_offset + key] = scores[key];
+                    if (include_logits) {
+                        logit_data[probability_offset + key] = scores[key];
+                    }
                 }
 
                 float maximum = scores[0];
@@ -323,6 +363,7 @@ AttentionForwardResult CausalSelfAttention::attend(
             }
         }
     }
+#endif
 
     Tensor output = linear(combined, output_weights_);
     return AttentionForwardResult{
