@@ -4,6 +4,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
+#include <functional>
 #include <span>
 #include <string>
 #include <string_view>
@@ -33,7 +34,8 @@ public:
     // El límite incluye los 256 bytes, los especiales y las fusiones.
     explicit BPETokenizer(std::size_t max_vocab_size = 4000);
 
-    void train(std::string_view corpus);
+    using TrainProgress = std::function<void(std::size_t learned, std::size_t target)>;
+    void train(std::string_view corpus, TrainProgress progress = {});
 
     [[nodiscard]] std::vector<TokenId> encode(std::string_view text) const;
     [[nodiscard]] std::string decode(std::span<const TokenId> ids) const;

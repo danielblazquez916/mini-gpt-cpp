@@ -22,6 +22,11 @@ struct ShiftedTokens {
     std::span<const std::uint32_t> targets,
     std::span<const std::uint8_t> mask = {});
 
+[[nodiscard]] Tensor cross_entropy_backward(
+    const Tensor& logits,
+    std::span<const std::uint32_t> targets,
+    std::span<const std::uint8_t> mask = {});
+
 [[nodiscard]] float perplexity(float loss);
 
 }  // namespace mini_gpt

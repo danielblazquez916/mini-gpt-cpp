@@ -4,6 +4,7 @@
 #include "mini_gpt/embedding.hpp"
 #include "mini_gpt/layer_norm.hpp"
 #include "mini_gpt/tensor.hpp"
+#include "mini_gpt/backpropagation.hpp"
 #include "mini_gpt/transformer_block.hpp"
 
 #include <cstddef>
@@ -31,6 +32,9 @@ struct GenerationConfig {
     SamplingStrategy strategy = SamplingStrategy::greedy;
     StopCondition stop_condition = StopCondition::end_of_conversation;
     std::uint32_t seed = 42;
+    std::size_t top_k = 0;
+    float repetition_penalty = 1.0F;
+    std::size_t repetition_window = 0;
 };
 
 struct GPTParameterCount {
@@ -63,6 +67,13 @@ public:
         std::size_t batch_size,
         std::size_t seq_len) const;
 
+    float backward(
+        std::span<const TokenId> token_ids,
+        std::size_t batch_size,
+        std::size_t seq_len,
+        std::span<const std::uint32_t> targets,
+        std::span<const std::uint8_t> mask = {});
+
     // Devuelve solo los tokens nuevos, incluido el especial que detenga la generación.
     [[nodiscard]] std::vector<TokenId> generate(
         std::span<const TokenId> prompt,
@@ -75,7 +86,13 @@ public:
         std::span<const float> logits,
         float temperature,
         SamplingStrategy strategy,
-        std::mt19937& generator);
+        std::mt19937& generator,
+        std::size_t top_k = 0);
+    static void apply_repetition_penalty(
+        std::span<const TokenId> context,
+        std::span<float> logits,
+        float penalty,
+        std::size_t window = 0);
 
     void save(const std::filesystem::path& path) const;
     [[nodiscard]] static GPT load(const std::filesystem::path& path);
@@ -88,6 +105,10 @@ public:
     [[nodiscard]] std::size_t max_seq_len() const noexcept;
     [[nodiscard]] float epsilon() const noexcept;
     [[nodiscard]] GPTParameterCount parameter_count() const;
+
+    void zero_grad();
+    [[nodiscard]] GPTGradients& gradients() noexcept;
+    [[nodiscard]] const GPTGradients& gradients() const noexcept;
 
     [[nodiscard]] Embedding& embedding() noexcept;
     [[nodiscard]] const Embedding& embedding() const noexcept;
@@ -109,6 +130,7 @@ private:
     std::vector<TransformerBlock> blocks_;
     LayerNorm final_norm_;
     Tensor output_weights_;
+    GPTGradients gradients_;
 };
 
 }  // namespace mini_gpt

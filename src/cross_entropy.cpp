@@ -83,6 +83,76 @@ float cross_entropy(
     return static_cast<float>(total_loss / static_cast<double>(valid_positions));
 }
 
+Tensor cross_entropy_backward(
+    const Tensor& logits,
+    std::span<const std::uint32_t> targets,
+    std::span<const std::uint8_t> mask) {
+    if (logits.rank() != 3) {
+        throw std::invalid_argument("Logits must have shape [batch_size, seq_len, vocab_size]");
+    }
+
+    const std::size_t batch_size = logits.shape()[0];
+    const std::size_t seq_len = logits.shape()[1];
+    const std::size_t vocab_size = logits.shape()[2];
+    const std::size_t positions = batch_size * seq_len;
+    if (vocab_size == 0 || targets.size() != positions ||
+        (!mask.empty() && mask.size() != positions)) {
+        throw std::invalid_argument("Incompatible shapes in Cross-Entropy backward");
+    }
+    for (const std::uint8_t value : mask) {
+        if (value > 1) {
+            throw std::invalid_argument("Mask values must be either zero or one");
+        }
+    }
+
+    std::size_t valid_positions = 0;
+    for (std::size_t position = 0; position < positions; ++position) {
+        if (mask.empty() || mask[position] != 0) {
+            ++valid_positions;
+        }
+    }
+    if (valid_positions == 0) {
+        throw std::invalid_argument("Cross-Entropy requires at least one valid position");
+    }
+
+    Tensor gradient = Tensor::zeros(logits.shape());
+    const float* logit_data = logits.data().data();
+    float* gradient_data = gradient.data().data();
+    const double scale = 1.0 / static_cast<double>(valid_positions);
+    for (std::size_t position = 0; position < positions; ++position) {
+        if (!mask.empty() && mask[position] == 0) {
+            continue;
+        }
+        if (targets[position] >= vocab_size) {
+            throw std::out_of_range("Target token ID is outside the vocabulary");
+        }
+
+        const std::size_t offset = position * vocab_size;
+        double maximum = -std::numeric_limits<double>::infinity();
+        for (std::size_t token = 0; token < vocab_size; ++token) {
+            const float value = logit_data[offset + token];
+            if (!std::isfinite(value)) {
+                throw std::invalid_argument("Logits must be finite at valid positions");
+            }
+            maximum = std::max(maximum, static_cast<double>(value));
+        }
+
+        double denominator = 0.0;
+        for (std::size_t token = 0; token < vocab_size; ++token) {
+            denominator += std::exp(static_cast<double>(logit_data[offset + token]) - maximum);
+        }
+        for (std::size_t token = 0; token < vocab_size; ++token) {
+            const double probability =
+                std::exp(static_cast<double>(logit_data[offset + token]) - maximum) /
+                denominator;
+            const double target = token == targets[position] ? 1.0 : 0.0;
+            gradient_data[offset + token] =
+                static_cast<float>((probability - target) * scale);
+        }
+    }
+    return gradient;
+}
+
 float perplexity(float loss) {
     if (!std::isfinite(loss) || loss < 0.0F) {
         throw std::invalid_argument("Perplexity requires a finite, non-negative loss");

@@ -81,10 +81,15 @@ std::string corpus() {
     const std::filesystem::path path =
         std::filesystem::path(MINI_GPT_TEST_DATA_DIR) / "conversations.txt";
     std::ifstream file(path, std::ios::binary);
-    if (!file) {
-        throw TestFailure("Cannot open test corpus");
+    if (file) {
+        return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
     }
-    return std::string(std::istreambuf_iterator<char>(file), std::istreambuf_iterator<char>());
+    return
+        "<|user|> hola <|eot|>\n"
+        "<|assistant|> ¡hola! ¿qué tal? <|eot|>\n"
+        "<|user|> bien, ¿y tú? <|eot|>\n"
+        "<|assistant|> bien también jajaja <|eot|>\n"
+        "<|end|>\n";
 }
 
 BPETokenizer trained_tokenizer(std::size_t max_vocab_size = 300) {

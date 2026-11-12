@@ -174,7 +174,7 @@ BPETokenizer::BPETokenizer(std::size_t max_vocab_size)
     : max_vocab_size_(validate_max_vocab_size(max_vocab_size)),
       vocabulary_(make_base_vocabulary()) {}
 
-void BPETokenizer::train(std::string_view corpus) {
+void BPETokenizer::train(std::string_view corpus, TrainProgress progress) {
     reset_to_base();
     if (corpus.empty() || max_vocab_size_ == base_vocabulary_size) {
         return;
@@ -215,6 +215,9 @@ void BPETokenizer::train(std::string_view corpus) {
 
         for (auto& sequence : sequences) {
             apply_merge(sequence, merge, result_id);
+        }
+        if (progress) {
+            progress(merges_.size(), max_vocab_size_ - base_vocabulary_size);
         }
     }
 }

@@ -9,6 +9,7 @@
 #include <cstdint>
 #include <fstream>
 #include <limits>
+#include <numeric>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -247,6 +248,7 @@ GPT::GPT(
             component_seed(seed, layer),
             epsilon);
     }
+    zero_grad();
 }
 
 Tensor GPT::forward(
@@ -286,8 +288,21 @@ std::vector<GPT::TokenId> GPT::generate(
         const Tensor logits = forward(context, 1, context.size());
         const auto last_logits = logits.data().subspan(
             (context.size() - 1) * vocab_size(), vocab_size());
+        std::vector<float> adjusted_logits;
+        if (config.repetition_penalty != 1.0F) {
+            adjusted_logits.assign(last_logits.begin(), last_logits.end());
+            apply_repetition_penalty(
+                context,
+                adjusted_logits,
+                config.repetition_penalty,
+                config.repetition_window);
+        }
         const TokenId next = select_token(
-            last_logits, config.temperature, config.strategy, generator);
+            adjusted_logits.empty() ? last_logits : std::span<const float>(adjusted_logits),
+            config.temperature,
+            config.strategy,
+            generator,
+            config.top_k);
         context.push_back(next);
         generated.push_back(next);
 
@@ -332,12 +347,16 @@ GPT::TokenId GPT::select_token(
     std::span<const float> logits,
     float temperature,
     SamplingStrategy strategy,
-    std::mt19937& generator) {
+    std::mt19937& generator,
+    std::size_t top_k) {
     if (logits.empty()) {
         throw std::invalid_argument("Token selection requires at least one logit");
     }
     if (logits.size() > static_cast<std::size_t>(std::numeric_limits<TokenId>::max())) {
         throw std::invalid_argument("Logit count exceeds TokenId range");
+    }
+    if (top_k > logits.size()) {
+        throw std::invalid_argument("top_k exceeds vocabulary size");
     }
     if (strategy == SamplingStrategy::greedy) {
         return static_cast<TokenId>(
@@ -347,17 +366,70 @@ GPT::TokenId GPT::select_token(
         throw std::invalid_argument("Unknown sampling strategy");
     }
 
-    const std::vector<float> probabilities = softmax(logits, temperature);
+    std::vector<TokenId> candidates(logits.size());
+    std::iota(candidates.begin(), candidates.end(), 0);
+    if (top_k != 0) {
+        std::sort(candidates.begin(), candidates.end(), [&](TokenId lhs, TokenId rhs) {
+            if (logits[lhs] != logits[rhs]) {
+                return logits[lhs] > logits[rhs];
+            }
+            return lhs < rhs;
+        });
+        candidates.resize(top_k);
+    }
+
+    std::vector<float> candidate_logits;
+    candidate_logits.reserve(candidates.size());
+    for (const TokenId id : candidates) {
+        candidate_logits.push_back(logits[id]);
+    }
+    const std::vector<float> probabilities = softmax(candidate_logits, temperature);
     std::uniform_real_distribution<double> distribution(0.0, 1.0);
     const double draw = distribution(generator);
     double cumulative = 0.0;
     for (std::size_t i = 0; i < probabilities.size(); ++i) {
         cumulative += probabilities[i];
         if (draw < cumulative) {
-            return static_cast<TokenId>(i);
+            return candidates[i];
         }
     }
-    return static_cast<TokenId>(probabilities.size() - 1);
+    return candidates.back();
+}
+
+void GPT::apply_repetition_penalty(
+    std::span<const TokenId> context,
+    std::span<float> logits,
+    float penalty,
+    std::size_t window) {
+    if (!std::isfinite(penalty) || penalty < 1.0F) {
+        throw std::invalid_argument("Repetition penalty must be finite and at least 1.0");
+    }
+    if (penalty == 1.0F || context.empty()) {
+        return;
+    }
+
+    const std::size_t first = window != 0 && context.size() > window
+        ? context.size() - window
+        : 0;
+    std::vector<bool> penalized(logits.size(), false);
+    for (std::size_t i = first; i < context.size(); ++i) {
+        const TokenId id = context[i];
+        if (id >= logits.size()) {
+            throw std::out_of_range("Context token ID is outside the vocabulary");
+        }
+        if (penalized[id]) {
+            continue;
+        }
+        if (!std::isfinite(logits[id])) {
+            throw std::invalid_argument("Logits must be finite");
+        }
+        if (logits[id] > 0.0F) {
+            logits[id] /= penalty;
+        } else if (logits[id] < 0.0F) {
+            logits[id] *= penalty;
+        }
+        penalized[id] = true;
+    }
 }
 
 void GPT::save(const std::filesystem::path& path) const {
@@ -547,6 +619,45 @@ Tensor& GPT::output_weights() noexcept {
 
 const Tensor& GPT::output_weights() const noexcept {
     return output_weights_;
+}
+
+void GPT::zero_grad() {
+    const auto reset = [](Tensor& gradient, const Tensor& parameter) {
+        if (gradient.shape() != parameter.shape()) {
+            gradient = Tensor::zeros(parameter.shape());
+        } else {
+            std::fill(gradient.data().begin(), gradient.data().end(), 0.0F);
+        }
+    };
+
+    reset(gradients_.embedding.token_embeddings, embedding_.token_embeddings());
+    reset(gradients_.embedding.positional_embeddings, embedding_.positional_embeddings());
+    gradients_.blocks.resize(blocks_.size());
+    for (std::size_t i = 0; i < blocks_.size(); ++i) {
+        const TransformerBlock& block = blocks_[i];
+        TransformerBlockGradients& gradient = gradients_.blocks[i];
+        reset(gradient.norm1.gamma, block.norm1().gamma());
+        reset(gradient.norm1.beta, block.norm1().beta());
+        reset(gradient.norm2.gamma, block.norm2().gamma());
+        reset(gradient.norm2.beta, block.norm2().beta());
+        reset(gradient.attention.q_weights, block.attention().q_weights());
+        reset(gradient.attention.k_weights, block.attention().k_weights());
+        reset(gradient.attention.v_weights, block.attention().v_weights());
+        reset(gradient.attention.output_weights, block.attention().output_weights());
+        reset(gradient.fc1_weights, block.fc1_weights());
+        reset(gradient.fc2_weights, block.fc2_weights());
+    }
+    reset(gradients_.final_norm.gamma, final_norm_.gamma());
+    reset(gradients_.final_norm.beta, final_norm_.beta());
+    reset(gradients_.output_weights, output_weights_);
+}
+
+GPTGradients& GPT::gradients() noexcept {
+    return gradients_;
+}
+
+const GPTGradients& GPT::gradients() const noexcept {
+    return gradients_;
 }
 
 Tensor GPT::forward_features(

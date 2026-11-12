@@ -282,7 +282,9 @@ AttentionForwardResult CausalSelfAttention::attend(
                     ((batch * num_heads_ + head) * seq_len + query) * head_dim_;
                 const std::size_t probability_offset =
                     ((batch * num_heads_ + head) * seq_len + query) * seq_len;
-
+                
+                // Esta condición garantiza que cada token solo 
+                // pueda atender a sí mismo y a los tokens anteriores.
                 for (std::size_t key = 0; key <= query; ++key) {
                     const std::size_t key_offset =
                         ((batch * num_heads_ + head) * seq_len + key) * head_dim_;
